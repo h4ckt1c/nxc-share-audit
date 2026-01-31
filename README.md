@@ -2,6 +2,10 @@
 
 Ein NetExec-Modul zum Auslesen von SMB-Share-Berechtigungen während Penetrationstests.
 
+## Disclaimer
+
+This thing is totally vibe-coded, and I'm not ashamed about it.
+
 ## Zweck
 
 Dieses Modul hilft Pentestern dabei, schnell zu identifizieren welche Netzwerkfreigaben zu weitreichende Berechtigungen haben. Es zeigt nicht nur die Shares, sondern auch die **Freigabeberechtigungen** (Share ACLs), was bei der Bewertung von Sicherheitsrisiken entscheidend ist.
