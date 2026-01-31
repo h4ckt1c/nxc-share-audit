@@ -1,0 +1,4 @@
+# Requirements for share_audit NetExec module
+
+# NetExec typically includes these dependencies already
+impacket>=0.11.0
