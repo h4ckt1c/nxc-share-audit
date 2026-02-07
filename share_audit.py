@@ -17,24 +17,32 @@ from impacket.dcerpc.v5 import transport, srvs
 from impacket.dcerpc.v5.dtypes import NULL
 from impacket import nt_errors
 from impacket.dcerpc.v5.rpcrt import DCERPCException
+from impacket.ldap import ldaptypes
+from nxc.helpers.misc import CATEGORY
 import traceback
 
 
-class CMEModule:
+class NXCModule:
     name = "share_audit"
     description = "Enumerate SMB shares and their permissions"
     supported_protocols = ["smb"]
     opsec_safe = True
     multiple_hosts = True
+    category = CATEGORY.ENUMERATION
 
     def options(self, context, module_options):
         """
-        DETAILED    Show detailed ACL information (default: false)
+        DETAILED        Show detailed ACL information (default: false)
+        FILTER_ADMIN    Filter out administrative shares like C$, ADMIN$, IPC$ (default: true)
         """
         self.detailed = False
+        self.filter_admin = True
 
         if "DETAILED" in module_options:
             self.detailed = module_options["DETAILED"].lower() == "true"
+
+        if "FILTER_ADMIN" in module_options:
+            self.filter_admin = module_options["FILTER_ADMIN"].lower() == "true"
 
     def on_login(self, context, connection):
         """
@@ -49,10 +57,18 @@ class CMEModule:
                 context.log.info("No shares found or unable to enumerate shares")
                 return
 
+            # Filter administrative shares if requested
+            if self.filter_admin:
+                shares = [s for s in shares if not self.is_admin_share(s['name'])]
+
             context.log.success(f"Found {len(shares)} share(s)")
 
             for share in shares:
-                self.display_share_info(context, share)
+                try:
+                    self.display_share_info(context, share)
+                except Exception as e:
+                    context.log.error(f"Error displaying share {share.get('name', 'unknown')}: {str(e)}")
+                    context.log.error(traceback.format_exc())
 
         except Exception as e:
             context.log.error(f"Error during share enumeration: {str(e)}")
@@ -132,45 +148,58 @@ class CMEModule:
 
         return shares_info
 
-    def parse_security_descriptor(self, context, sd):
+    def is_admin_share(self, share_name):
+        """
+        Check if a share is an administrative share
+        """
+        admin_shares = ['ADMIN$', 'C$', 'D$', 'E$', 'IPC$', 'PRINT$']
+        # Check for drive shares like C$, D$, etc.
+        if len(share_name) == 2 and share_name[1] == '$':
+            return True
+        return share_name.upper() in admin_shares
+
+    def parse_security_descriptor(self, context, sd_data):
         """
         Parse a Security Descriptor and extract ACL entries
         """
         permissions = []
 
-        if not sd:
+        if not sd_data:
             return ["No security descriptor available"]
 
         try:
+            # Convert list of bytes to bytes object if needed
+            if isinstance(sd_data, list):
+                sd_data = b''.join(sd_data)
+
+            # Parse the security descriptor from binary data
+            sd = ldaptypes.SR_SECURITY_DESCRIPTOR(data=sd_data)
+
             # The security descriptor has a DACL (Discretionary Access Control List)
-            if hasattr(sd, 'Dacl') and sd['Dacl']:
-                dacl = sd['Dacl']
-
-                if hasattr(dacl, 'Data') and dacl['Data']:
-                    for ace_count in range(dacl['Data']['AceCount']):
-                        ace = dacl['Data']['Data'][ace_count]
-
-                        # Get the SID from the ACE
-                        sid = ace['Ace']['Sid'].formatCanonical()
-
-                        # Get access mask (permissions)
-                        mask = ace['Ace']['Mask']['Mask']
-
-                        # Get ACE type (Allow/Deny)
-                        ace_type = ace['TypeName']
-
-                        # Translate SID to name if possible (common ones)
-                        trustee = self.translate_sid(sid)
-
-                        # Translate access mask to readable permissions
-                        perms = self.translate_permissions(mask)
-
-                        perm_string = f"{trustee}: {perms} ({ace_type})"
-                        permissions.append(perm_string)
-                else:
-                    permissions.append("Empty DACL (No access)")
-            else:
+            if sd['Dacl'] is None:
                 permissions.append("No DACL (Everyone Full Control)")
+            elif hasattr(sd['Dacl'], 'aces') and len(sd['Dacl'].aces) > 0:
+                # Iterate through ACEs
+                for ace in sd['Dacl'].aces:
+                    # Get the SID from the ACE
+                    sid = ace['Ace']['Sid'].formatCanonical()
+
+                    # Get access mask (permissions)
+                    mask = ace['Ace']['Mask']['Mask']
+
+                    # Get ACE type (Allow/Deny)
+                    ace_type = ace['TypeName']
+
+                    # Translate SID to name if possible (common ones)
+                    trustee = self.translate_sid(sid)
+
+                    # Translate access mask to readable permissions
+                    perms = self.translate_permissions(mask)
+
+                    perm_string = f"{trustee}: {perms} ({ace_type})"
+                    permissions.append(perm_string)
+            else:
+                permissions.append("Empty DACL (No access)")
 
         except Exception as e:
             context.log.error(f"Error parsing security descriptor: {str(e)}")
@@ -296,14 +325,14 @@ class CMEModule:
         if dangerous:
             context.log.highlight(f"[!] Share: {share_name} [{share_type}]")
         else:
-            context.log.info(f"Share: {share_name} [{share_type}]")
+            context.log.success(f"Share: {share_name} [{share_type}]")
 
         if comment:
-            context.log.info(f"  Comment: {comment}")
+            context.log.success(f"  Comment: {comment}")
 
-        context.log.info("  Permissions:")
+        context.log.success("  Permissions:")
         for perm in permissions:
             if dangerous and ('Everyone' in perm or 'Anonymous' in perm):
                 context.log.highlight(f"    [!] {perm}")
             else:
-                context.log.info(f"    - {perm}")
+                context.log.success(f"    - {perm}")
